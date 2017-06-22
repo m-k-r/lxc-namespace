@@ -1,0 +1,65 @@
+#!/bin/bash
+#
+# -----------------------------------------------------------------------------
+#
+# Author:	Marcel Keller
+# Usage:	change the namespace of a lxc-container
+# License:	GPLv3 http://www.gnu.org/licenses/gpl-3.0
+#
+# ----------------------------- Global Variables ------------------------------
+
+version=0.1.0
+usage="usage: lxc-namespace [parameter]
+
+ -n	name of the container
+ -a	add to namespace
+ -s	subtract to namespace
+ -v	show version of this script
+ -h	this page"
+container_root=/var/lib/lxc
+
+# --------------------------------- Parameter ---------------------------------
+
+if [ "$#" == "0" ]
+	then	echo "$usage" && exit 0
+fi
+
+while getopts ":n:a:s:vh" opt; do
+	case ${opt} in
+		n)	container_name=$OPTARG
+			;;
+		a)	number=$OPTARG
+			mode="+"
+			;;
+		s)	number=$OPTARG
+			mode="-"
+			;;
+		v)	echo "${version}"
+			exit 0
+			;;
+		h)	echo "${usage}"
+			exit 0
+			;;
+		?)	echo "Invalid option: -$OPTARG" >&2
+			exit 1
+			;;
+	esac
+done
+
+# -----------------------------------------------------------------------------
+
+# create list of files and directories which should be changed
+elements=$(find ${container_root}/${container_name}/rootfs/ && find ${container_root}/${container_name} -maxdepth 0)
+
+# change owner:group
+for  element in ${elements}
+	do	ouid=$(stat -c=%u "${element}" | grep -o '[0-9]*')
+		ogid=$(stat -c=%g "${element}" | grep -o '[0-9]*')
+		nuid=$((${ouid} ${mode} ${number}))
+		ngid=$((${ogid} ${mode} ${number}))
+		chown -h ${nuid}:${ngid} ${element}
+done
+
+# chmod sudo otherwise sudo doesn't work
+chmod 4755 ${container_root}/${container_name}/rootfs/usr/bin/sudo
+chmod 700 ${container_root}/${container_name}
