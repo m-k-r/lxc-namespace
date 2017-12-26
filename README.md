@@ -23,7 +23,8 @@ lxc.id_map = g 0 100000 65536
 
 ### usage
 
-lxc-namespace -n (containername) -a (add) | -s (subtract) 100000 (or any other number)
+**lxc-namespace -n** $CONTAINER_NAME **-a** (add) | **-s** (subtract) $ID_OFFSET
 
+**path**  
 This script assumes that the containers are in /var/lib/lxc.  
 The possibillity to override this will follow later.
