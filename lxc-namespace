@@ -2,7 +2,7 @@
 #
 # -----------------------------------------------------------------------------
 #
-# Author:	Marcel Keller
+# Author:	Marcel Keller (m-k-r)
 # Usage:	change the namespace of a lxc-container
 # License:	GPLv3 http://www.gnu.org/licenses/gpl-3.0
 #
@@ -53,11 +53,11 @@ elements=$(find ${container_root}/${container_name}/rootfs/ && find ${container_
 
 # change owner:group
 for  element in ${elements}
-	do	ouid=$(stat -c=%u "${element}" | grep -o '[0-9]*')
-		ogid=$(stat -c=%g "${element}" | grep -o '[0-9]*')
-		nuid=$((${ouid} ${mode} ${number}))
-		ngid=$((${ogid} ${mode} ${number}))
-		chown -h ${nuid}:${ngid} ${element}
+do	ouid=$(stat -c=%u "${element}" | grep -o '[0-9]*')
+	ogid=$(stat -c=%g "${element}" | grep -o '[0-9]*')
+	nuid=$((${ouid} ${mode} ${number}))
+	ngid=$((${ogid} ${mode} ${number}))
+	chown -h ${nuid}:${ngid} ${element}
 done
 
 # chmod sudo otherwise sudo doesn't work
