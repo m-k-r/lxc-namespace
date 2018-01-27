@@ -1,0 +1,17 @@
+_lxc-namespace() {
+	local cur prev list
+	COMPREPLY=()
+	cur="${COMP_WORDS[COMP_CWORD]}"
+	prev="${COMP_WORDS[COMP_CWORD-1]}"
+
+	case "${prev}" in
+		-n)	list=$(ls /var/lib/lxc/)
+			;;
+		*)	list="-n -a -s -v -h"
+			;;
+	esac
+
+	COMPREPLY=( $(compgen -W "${list}" -- ${cur}) )
+	return 0
+}
+complete -F _lxc-namespace lxc-namespace
