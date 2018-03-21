@@ -5,9 +5,9 @@ _lxc-namespace() {
 	prev="${COMP_WORDS[COMP_CWORD-1]}"
 
 	case "${prev}" in
-		-n)	list=$(ls /var/lib/lxc/)
+		-c)	list=$(ls /var/lib/lxc/)
 			;;
-		*)	list="-n -a -s -v -h"
+		*)	list="-c -m -n -p -v -h"
 			;;
 	esac
 
