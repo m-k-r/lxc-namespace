@@ -83,9 +83,9 @@ if [[ -n "${arg_id}" ]]; then
 fi
 
 # get elements from rootfs
-elements=$(find "${rootfs}"/)
+elements=$(find "${rootfs}"/ | sed 's/ /\\ /g')
 
-# ------------------------------- functions ------------------------------------
+# ------------------------------- Functions ------------------------------------
 
 ##### helper functions #####
 function check-integer () {
@@ -99,19 +99,19 @@ function check-integer () {
 # chown removes sticky bits out ouf security considerations. chmod to before to get sticky bits back
 # if permissions are compared only sticky bits are affected. this omits symlinks and other problematic files like /dev/*
 function change-absolute {
-	for  element in ${elements}
+	while read element
 	do	permissions_old=$(stat -c %a "${element}")
 		chown -h "${uid_config}":"${gid_config}" "${element}"
 		permissions_new=$(stat -c %a "${element}")
 		if [[ ! "${permissions_new}" == "${permissions_old}" ]]; then
 			chmod "${permissions_old}" "${element}"
 		fi
-	done
+	done <<< "${elements}"
 }
 
 # change owner:group relative to existing mapping
 function change-relative {
-	for  element in ${elements}
+	while read element
 	do	permissions_old=$(stat -c %a "${element}")
 		uid_old=$(stat -c %u "${element}")
 		gid_old=$(stat -c %g "${element}")
@@ -122,18 +122,18 @@ function change-relative {
 		if [[ ! "${permissions_new}" == "${permissions_old}" ]]; then
 			chmod "${permissions_old}" "${element}"
 		fi
-	done
+	done <<< "${elements}"
 }
 
 function check-hardlinks {
 	# get all files with more than one hardlink
-	hardlinks_multi=$(find "${rootfs}"/ -type f -links +1 2>/dev/null)
+	hardlinks_multi=$(find "${rootfs}"/ -type f -links +1 2>/dev/null | sed 's/ /\\ /g')
 	hardlinks_multi_number=$(echo "${hardlinks_multi}" | sed '/^\s*$/d' | awk 'END{print NR}')
 	echo "found ${hardlinks_multi_number} multiple hardlink(s). Filter out the redundant"
 	# get all redundant hardlinks
-	for hardlink_multi in ${hardlinks_multi}
+	while read hardlink_multi
 	do	# get all hardlinks to file
-		hardlinks_to_inode=($(find "${rootfs}"/ -samefile "${hardlink_multi}"))
+		hardlinks_to_inode=($(find "${rootfs}"/ -samefile "${hardlink_multi}" | sed 's/ /\\ /g'))
 		probe=$(echo "${hardlinks_known}" | grep -w "${hardlinks_to_inode[0]}")
 		# check if file is already known. if one hardlink is known all hardlinks to inode are known
 		if [[ -n "${probe}" ]]; then
@@ -142,13 +142,13 @@ function check-hardlinks {
 			# if hardlink is not known its uid:gid has to be changed
 			hardlinks_known+=${hardlinks_to_inode[@]}$'\n'
 		fi
-	done
+	done <<< "${hardlinks_multi}"
 	echo "done"
-	unset hardlinks_multi hardlink_multi hardlinks_to_inode hardlinks_known
+	unset hardlinks_multi hardlink_multi hardlinks_multi_number hardlinks_to_inode hardlinks_known
 }
 
 function check-mapping {
-	for  element in ${elements}
+	while read element
 	do	uid_old=$(stat -c %u "${element}")
 		gid_old=$(stat -c %g "${element}")
 
@@ -156,7 +156,8 @@ function check-mapping {
 			elements_repair+=${element}$'\n'
 			output+="${uid_old}:${gid_old} ${element}"$'\n'
 		fi
-	done
+	done <<< "${elements}"
+	elements_repair=($(echo "${elements_repair}" | grep -v '^$'))
 }
 
 function get-diff {
@@ -192,28 +193,32 @@ function get-mapping {
 	gid_rootfs=$(stat -c %g "${rootfs}")
 }
 
-function do-change {
+# ------------------------------ Main Script -----------------------------------
+
+# get existing mapping and create diff
+get-mapping
+elements_number=$(echo "${elements}" | sed '/^\s*$/d' | awk 'END{print NR}')
+echo "processing uid/gid for ${elements_number} files and directories in rootfs."
+echo "maybe you want to get a coffee, this may take a while..."
+echo "-----"
+
+if [[ "${mode}" == "change" ]]; then
 	# check if ids are integer
 	check-integer "${integers_change}"
 	get-diff
-
 	# if a file or directory is hardlinked multiple times the changes are applied multiple times.
-	# so all but one hardlink has to be filtered out
-	check-hardlinks
-
+	# so all but one hardlink per inode has to be filtered out
 	if [[ ! "${uid_diff}:${gid_diff}" == "0:0" ]]; then
+		check-hardlinks
 		echo "change ${uid_rootfs}:${gid_rootfs} to ${uid_config}:${gid_config}"
 		change-relative
 	fi
 
-	# change container to configured uid/gid
+	# change container to configured uid/gid and restrict access to owner
 	elements=${container}
 	change-absolute
-	# restrict access to owner
-	chmod 700 ${container}
-}
-
-function do-check {
+	chmod 700 ${container};
+elif [[ "${mode}" == "check" ]]; then
 	# check if ids are integer
 	check-integer "${integers_check}"
 	uid_limit=$((${uid_config} + ${uid_config_range}))
@@ -222,7 +227,6 @@ function do-check {
 	check-mapping
 
 	if [[ -n "${elements_repair}" ]]; then
-		elements_repair=$(echo "${elements_repair}" | grep -v '^$')
 		elements_repair_number=$(echo "${elements_repair}" | sed '/^\s*$/d' | awk 'END{print NR}')
 		output=$(echo "${output}" | grep -v '^$')
 		echo "the following ${elements_repair_number} file(s) or directories are out of range:"
@@ -236,19 +240,4 @@ function do-check {
 		fi; else
 		echo "looks fine. all files within range"
 	fi
-}
-
-# ------------------------------ Main Script -----------------------------------
-
-# get existing mapping and create diff
-get-mapping
-elements_number=$(echo "${elements}" | sed '/^\s*$/d' | awk 'END{print NR}')
-echo "processing uid/gid for $(echo "${elements}" | wc -l) files and directories in rootfs."
-echo "maybe you want to get a coffee, this may take a while..."
-echo "-----"
-
-if [[ "${mode}" == "change" ]]; then
-	do-change;
-elif [[ "${mode}" == "check" ]]; then
-	do-check
 fi

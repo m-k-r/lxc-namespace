@@ -7,6 +7,8 @@ _lxc-namespace() {
 	case "${prev}" in
 		-c)	list=$(ls /var/lib/lxc/)
 			;;
+		-m)	list="change check"
+			;;
 		*)	list="-c -m -n -p -v -h"
 			;;
 	esac
