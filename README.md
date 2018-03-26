@@ -1,3 +1,7 @@
+### Don't use this version. There are known flaws with multiple hardlinks and sticky bits
+
+***
+
 LXC before 1.0 mapped the user and group ids from inside the container to the same ids on the host. This can be considered a security risk. Since 1.0 you have the option to use a range outside from the host.
 
 ### map a range of uids and gids to a user.
