@@ -18,10 +18,11 @@ usage="usage: lxc-namespace [parameter]
  -v	show version of this script
  -h	this page"
 path=/var/lib/lxc
-supported_mode="change check"
+supported_mode="change check show"
 mode=change
 integers_change="uid_config gid_config uid_rootfs gid_rootfs"
 integers_check="uid_config gid_config uid_config_range gid_config_range"
+time_start=${SECONDS}
 
 # --------------------------------- Parameter ---------------------------------
 
@@ -96,137 +97,110 @@ function check-integer () {
 	done
 }
 
-# chown removes sticky bits out ouf security considerations. chmod to before to get sticky bits back
-# if permissions are compared only sticky bits are affected. this omits symlinks and other problematic files like /dev/*
-function change-absolute {
-	while read element
-	do	permissions_old=$(stat -c %a "${element}")
-		chown -h "${uid_config}":"${gid_config}" "${element}"
-		permissions_new=$(stat -c %a "${element}")
-		if [[ ! "${permissions_new}" == "${permissions_old}" ]]; then
-			chmod "${permissions_old}" "${element}"
-		fi
-	done <<< "${elements}"
+# change owner:group relative to existing mapping or absolute
+function change-elements () {
+	aa="0"
+	if [[ "${1}" == "absolute" ]]; then
+		while read element
+		do	chown -h "${uid_config}":"${gid_config}" "${element}"
+		aa=$((${aa} + 1))
+		echo -ne "${aa}\r"
+		done <<< "${2}";
+	elif [[ "${1}" == "relative" ]]; then
+		while read element
+		do	uid_old=$(stat -c %u "${element}")
+			gid_old=$(stat -c %g "${element}")
+			uid_new=$((${uid_old} ${operator_uid} ${uid_diff}))
+			gid_new=$((${gid_old} ${operator_gid} ${gid_diff}))
+			chown -h "${uid_new}":"${gid_new}" "${element}"
+			aa=$((${aa} + 1))
+			echo -ne "${aa}\r"
+		done <<< "${2}"
+	fi
+	echo -e "\ndone"
 }
 
-# change owner:group relative to existing mapping
-function change-relative {
-	while read element
-	do	permissions_old=$(stat -c %a "${element}")
-		uid_old=$(stat -c %u "${element}")
-		gid_old=$(stat -c %g "${element}")
-		uid_new=$((${uid_old} ${operator_uid} ${uid_diff}))
-		gid_new=$((${gid_old} ${operator_gid} ${gid_diff}))
-		chown -h "${uid_new}":"${gid_new}" "${element}"
-		permissions_new=$(stat -c %a "${element}")
-		if [[ ! "${permissions_new}" == "${permissions_old}" ]]; then
-			chmod "${permissions_old}" "${element}"
+function get-ids () {
+	if [[ "${1}" == "diff" ]]; then
+		uid_diff=$((${uid_config} - ${uid_rootfs}))
+		gid_diff=$((${gid_config} - ${gid_rootfs}))
+
+		if [[ "${uid_diff}" -lt "0" ]]; then
+			operator_uid="-"
+			uid_diff=$(echo "${uid_diff}" | cut -c 2-); else
+			operator_uid="+"
 		fi
-	done <<< "${elements}"
+
+		if [[ "${gid_diff}" -lt "0" ]]; then
+			operator_gid="-"
+			gid_diff=$(echo "${gid_diff}" | cut -c 2-); else
+			operator_gid="+"
+		fi;
+	elif [[ "${1}" == "config" ]]; then
+		# get user mapping from config, container and rootfs
+		if [[ ! -n "${uid_config}" ]]; then
+			uid_config=$(awk -v condition1="lxc.id_map" -v condition2="u" '$1 == condition1 && $3 == condition2 { print $5 }' ${config} 2>&1)
+			gid_config=$(awk -v condition1="lxc.id_map" -v condition2="g" '$1 == condition1 && $3 == condition2 { print $5 }' ${config} 2>&1)
+		fi
+
+		if [[ ! "${mode}" == "change" ]]; then
+			uid_config_range=$(awk -v condition1="lxc.id_map" -v condition2="u" '$1 == condition1 && $3 == condition2 { print $6 }' ${config} 2>&1)
+			gid_config_range=$(awk -v condition1="lxc.id_map" -v condition2="g" '$1 == condition1 && $3 == condition2 { print $6 }' ${config} 2>&1)
+		fi
+
+		uid_rootfs=$(stat -c %u "${rootfs}")
+		gid_rootfs=$(stat -c %g "${rootfs}");
+	elif [[ "${1}" == "range" ]]; then
+		uid_limit=$((${uid_config} + ${uid_config_range}))
+		gid_limit=$((${gid_config} + ${gid_config_range}))
+	fi
 }
 
-function check-hardlinks {
+function do-hardlinks () {
 	# get all files with more than one hardlink
-	hardlinks_multi=$(find "${rootfs}"/ -type f -links +1 2>/dev/null | sed 's/ /\\ /g')
+	hardlinks_multi=$(find "${1}"/ -type f -links +1 2>/dev/null | sed 's/ /\\ /g')
 	hardlinks_multi_number=$(echo "${hardlinks_multi}" | sed '/^\s*$/d' | awk 'END{print NR}')
-	echo "found ${hardlinks_multi_number} multiple hardlink(s). Filter out the redundant"
+	echo -e "-----\nfound ${hardlinks_multi_number} multiple hardlink(s). Filter out the redundant"
 	# get all redundant hardlinks
+	aa="0"
 	while read hardlink_multi
 	do	# get all hardlinks to file
-		hardlinks_to_inode=($(find "${rootfs}"/ -samefile "${hardlink_multi}" | sed 's/ /\\ /g'))
-		probe=$(echo "${hardlinks_known}" | grep -w "${hardlinks_to_inode[0]}")
+		hardlinks_to_inode=($(find "${1}"/ -samefile "${hardlink_multi}" | sed 's/ /\\ /g'))
+		probe=$(echo "${hardlinks_known}" | grep -Fw "${hardlinks_to_inode[0]}")
 		# check if file is already known. if one hardlink is known all hardlinks to inode are known
 		if [[ -n "${probe}" ]]; then
 			# if inode is already known remove hardlink from elements
-			elements=$(echo "${elements}" | grep -vw "${hardlink_multi}"); else
+			elements=$(echo "${elements}" | grep -Fvw "${hardlink_multi}"); else
 			# if hardlink is not known its uid:gid has to be changed
 			hardlinks_known+=${hardlinks_to_inode[@]}$'\n'
+			inodes+=${hardlink_multi}$'\n'
 		fi
+	aa=$((${aa} + 1))
+	echo -ne "${aa}\r"
 	done <<< "${hardlinks_multi}"
-	echo "done"
+	inodes=$(echo "${inodes}" | grep -v '^$')
+	inodes_number=$(echo "${inodes}" | sed '/^\s*$/d' | awk 'END{print NR}')
+	echo -e "\ndone. ${inodes_number} left"
 	unset hardlinks_multi hardlink_multi hardlinks_multi_number hardlinks_to_inode hardlinks_known
 }
 
-function check-mapping {
-	while read element
-	do	uid_old=$(stat -c %u "${element}")
-		gid_old=$(stat -c %g "${element}")
+function do-mapping () {
+	if [[ "${1}" == "check" ]]; then
+		aa="0"
+		while read element
+		do	uid_old=$(stat -c %u "${element}")
+			gid_old=$(stat -c %g "${element}")
 
-		if [[ "${uid_old}" -lt "${uid_config}" ]] || [[ "${uid_old}" -gt "${uid_limit}" ]] || [[ "${gid_old}" -lt "${gid_config}" ]] || [[ "${gid_old}" -gt "${gid_limit}" ]]; then
-			elements_repair+=${element}$'\n'
-			output+="${uid_old}:${gid_old} ${element}"$'\n'
-		fi
-	done <<< "${elements}"
-	elements_repair=($(echo "${elements_repair}" | grep -v '^$'))
-}
-
-function get-diff {
-	uid_diff=$((${uid_config} - ${uid_rootfs}))
-	gid_diff=$((${gid_config} - ${gid_rootfs}))
-
-	if [[ "${uid_diff}" -lt "0" ]]; then
-		operator_uid="-"
-		uid_diff=$(echo "${uid_diff}" | cut -c 2-); else
-		operator_uid="+"
-	fi
-
-	if [[ "${gid_diff}" -lt "0" ]]; then
-		operator_gid="-"
-		gid_diff=$(echo "${gid_diff}" | cut -c 2-); else
-		operator_gid="+"
-	fi
-}
-
-# get user mapping from config, container and rootfs
-function get-mapping {
-	if [[ ! -n "${uid_config}" ]]; then
-		uid_config=$(awk -v condition1="lxc.id_map" -v condition2="u" '$1 == condition1 && $3 == condition2 { print $5 }' ${config} 2>&1)
-		gid_config=$(awk -v condition1="lxc.id_map" -v condition2="g" '$1 == condition1 && $3 == condition2 { print $5 }' ${config} 2>&1)
-	fi
-
-	if [[ ! "${mode}" == "change" ]]; then
-		uid_config_range=$(awk -v condition1="lxc.id_map" -v condition2="u" '$1 == condition1 && $3 == condition2 { print $6 }' ${config} 2>&1)
-		gid_config_range=$(awk -v condition1="lxc.id_map" -v condition2="g" '$1 == condition1 && $3 == condition2 { print $6 }' ${config} 2>&1)
-	fi
-
-	uid_rootfs=$(stat -c %u "${rootfs}")
-	gid_rootfs=$(stat -c %g "${rootfs}")
-}
-
-# ------------------------------ Main Script -----------------------------------
-
-# get existing mapping and create diff
-get-mapping
-elements_number=$(echo "${elements}" | sed '/^\s*$/d' | awk 'END{print NR}')
-echo "processing uid/gid for ${elements_number} files and directories in rootfs."
-echo "maybe you want to get a coffee, this may take a while..."
-echo "-----"
-
-if [[ "${mode}" == "change" ]]; then
-	# check if ids are integer
-	check-integer "${integers_change}"
-	get-diff
-	# if a file or directory is hardlinked multiple times the changes are applied multiple times.
-	# so all but one hardlink per inode has to be filtered out
-	if [[ ! "${uid_diff}:${gid_diff}" == "0:0" ]]; then
-		check-hardlinks
-		echo "change ${uid_rootfs}:${gid_rootfs} to ${uid_config}:${gid_config}"
-		change-relative
-	fi
-
-	# change container to configured uid/gid and restrict access to owner
-	elements=${container}
-	change-absolute
-	chmod 700 ${container};
-elif [[ "${mode}" == "check" ]]; then
-	# check if ids are integer
-	check-integer "${integers_check}"
-	uid_limit=$((${uid_config} + ${uid_config_range}))
-	gid_limit=$((${gid_config} + ${gid_config_range}))
-	echo "check if files are in range of ${uid_config}:${gid_config} to ${uid_limit}:${gid_limit}"
-	check-mapping
-
-	if [[ -n "${elements_repair}" ]]; then
+			if [[ "${uid_old}" -lt "${uid_config}" ]] || [[ "${uid_old}" -gt "${uid_limit}" ]] || [[ "${gid_old}" -lt "${gid_config}" ]] || [[ "${gid_old}" -gt "${gid_limit}" ]]; then
+				elements_repair+=${element}$'\n'
+				output+="${uid_old}:${gid_old} ${element}"$'\n'
+			fi
+		aa=$((${aa} + 1))
+		echo -ne "${aa}\r"
+		done <<< "${2}"
+		echo -e "\ndone"
+		elements_repair=($(echo "${elements_repair}" | grep -v '^$'));
+	elif [[ "${1}" == "repair" ]]; then
 		elements_repair_number=$(echo "${elements_repair}" | sed '/^\s*$/d' | awk 'END{print NR}')
 		output=$(echo "${output}" | grep -v '^$')
 		echo "the following ${elements_repair_number} file(s) or directories are out of range:"
@@ -234,10 +208,88 @@ elif [[ "${mode}" == "check" ]]; then
 		read -p "do you want to give these ${elements_repair_number} file(s) and directories to the containers root-user ${uid_config}:${gid_config}?"$'\n' do_repair
 
 		if [[ "${do_repair}" == 'y' ]] || [[ "${do_repair}" == 'yes' ]] || [[ "${do_repair}" == 'j' ]]; then
-			elements=${elements_repair}
-			change-absolute; else
+			change-elements absolute "${elements_repair}"; else
 			echo "nothing changed"
-		fi; else
-		echo "looks fine. all files within range"
+		fi
 	fi
+}
+
+# chown removes sticky bits out ouf security considerations. chmod to before to get sticky bits back
+function do-sticky () {
+	if [[ "${1}" == "get" ]]; then
+		echo -e "-----\nsearching for sticky bits"
+		aa=1
+		while [[ "${aa}" -le "7" ]]; do
+			stickys+=$(find "${2}" -perm -${aa}000 | sed 's/ /\\ /g')$'\n'
+			aa=$((${aa} + 1))
+		done
+		stickys=$(echo "${stickys}" | grep -v '^$')
+		aa="0"
+		while read sticky
+		do	permissions_old+="$(stat -c %a ${sticky}) ${sticky}"$'\n'
+			aa=$((${aa} + 1))
+			echo -ne "${aa}\r"
+		done <<< "${stickys}"
+		permissions_old=$(echo "${permissions_old}" | grep -v '^$')
+		sticky_number=$(echo "${stickys}" | sed '/^\s*$/d' | awk 'END{print NR}');
+		echo -e "\ndone. found ${sticky_number} files with sticky bits"
+	elif [[ "${1}" == "change" ]]; then
+		aa="0"
+		while read sticky
+		do	file=$(echo "${sticky}" | cut -d " " -f 2-)
+			permission=$(echo "${sticky}" | cut -d " " -f 1)
+			chmod "${permission}" "${file}"
+			aa=$((${aa} + 1))
+			echo -ne "${aa}\r"
+		done <<< "${2}"
+		echo -e "\ndone"
+	fi
+}
+
+# ------------------------------ Main Script -----------------------------------
+
+# get existing mapping and create diff
+get-ids config
+elements_number=$(echo "${elements}" | sed '/^\s*$/d' | awk 'END{print NR}')
+echo -e "processing uid/gid for ${elements_number} files and directories in rootfs.\nmaybe you want to get a coffee, this may take a while..."
+
+if [[ "${mode}" == "change" ]]; then
+	# check if ids are integer
+	check-integer "${integers_change}"
+	get-ids diff
+	# if a file or directory is hardlinked multiple times the changes are applied multiple times.
+	# so all but one hardlink per inode has to be filtered out
+	if [[ ! "${uid_diff}:${gid_diff}" == "0:0" ]]; then
+		do-hardlinks "${rootfs}"
+		do-sticky get "${rootfs}"
+		echo -e "-----\nchange ${uid_rootfs}:${gid_rootfs} to ${uid_config}:${gid_config}"
+		change-elements relative "${elements}"
+		echo -e "-----\napply sticky bits"
+		do-sticky change "${permissions_old}"; else
+		echo "nothing to do. mapping already ${uid_config}:${gid_config}"
+	fi
+
+	# change container to configured uid/gid and restrict access to owner
+	echo -e "-----\nchange container"
+	change-elements absolute "${container}"
+	chmod 700 "${container}";
+elif [[ "${mode}" == "check" ]]; then
+	# check if ids are integer
+	check-integer "${integers_check}"
+	get-ids range
+	echo -e "-----\ncheck if files are in range of ${uid_config}:${gid_config} to ${uid_limit}:${gid_limit}"
+	do-mapping check "${elements}"
+
+	if [[ -n "${elements_repair}" ]]; then
+		do-mapping repair; else
+		echo "looks fine. all files within range"
+	fi;
+elif [[ "${mode}" == "show" ]]; then
+	get-ids range
+	echo -e "-----\nrange is: ${uid_config}:${gid_config} to ${uid_limit}:${gid_limit}"
+	do-hardlinks ${rootfs}
+	echo -e "inodes are:\n${inodes}"
+	do-sticky get "${rootfs}"
+	echo -e "sticky bits are:\n${permissions_old}"
 fi
+time_running=$((${SECONDS} - ${time_start}))
