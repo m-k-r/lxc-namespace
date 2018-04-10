@@ -76,8 +76,8 @@ fi
 if [[ -n "${arg_id}" ]]; then
 	probe=$(echo "$arg_id" | grep ":")
 	if [[ -n "${probe}" ]]; then
-		uid_config=$(echo "${arg_id}")
-		gid_config=$(echo "${arg_id}"); else
+		uid_config=$(echo "${arg_id}" | cut -d ":" -f 1)
+		gid_config=$(echo "${arg_id}" | cut -d ":" -f 2); else
 		uid_config=${arg_id}
 		gid_config=${arg_id}
 	fi
