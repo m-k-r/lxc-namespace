@@ -26,8 +26,8 @@ time_start=${SECONDS}
 
 # --------------------------------- Parameter ---------------------------------
 
-if [ "$#" == "0" ]
-	then	echo "$usage" && exit 0
+if [[ "$#" == "0" ]]; then
+	echo "$usage" && exit 0
 fi
 
 while getopts ":c:m:n:p:vh" opt; do
